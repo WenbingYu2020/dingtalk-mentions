@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.Python
+env/
+venv/
+.venv/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 项目本地目录
+.plan/
+_archive/
+
+# 运行时状态（用户本地，不入库）
+.dingtalk-mentions/
+
+# 敏感文件
+*.env
+.env.local
+credentials.json
