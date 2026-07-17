@@ -1,5 +1,10 @@
 # ding-mentions
 
+[![Release](https://img.shields.io/github/v/release/WenbingYu2020/dingtalk-mentions?display_name=tag&sort=semver)](https://github.com/WenbingYu2020/dingtalk-mentions/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/WenbingYu2020/dingtalk-mentions/release.yml?branch=main)](https://github.com/WenbingYu2020/dingtalk-mentions/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue)](#系统要求)
+
 抓取钉钉指定会话分组内所有群聊中 **@我** 的消息，去重后写入钉钉 AI 表格。提供两种用法：
 
 - **桌面版（推荐给普通用户）**：下载一个 `.exe` 双击运行，图形界面操作
@@ -16,8 +21,10 @@
 ### 使用流程
 
 1. 双击运行下载的 `.exe`
-   - 首次运行 Windows SmartScreen 可能拦截 → 点 **更多信息 → 仍要运行**
-   - 因为 exe 没有代码签名证书，属于正常提示
+   - 首次运行 Windows SmartScreen 可能弹窗："**Windows 已保护你的电脑**"
+   - 点弹窗左下角的 **更多信息** → 底部出现 **仍要运行** 按钮 → 点它
+   - 因为 exe 没花钱买代码签名证书，属于正常提示，不是病毒
+   - 如果被杀毒软件拦（比如 360 / 火绒），加个信任白名单就行
 2. 首次启动时程序会**自动下载 dws.exe**（钉钉官方 CLI，~8MB）到 `~/.local/bin/`，等进度条走完
 3. 点 **登录 / 扫码** → 用钉钉扫码授权
 4. 点 **加载分组** → 从下拉框选一个会话分组
