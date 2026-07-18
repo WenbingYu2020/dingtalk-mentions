@@ -9,6 +9,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 import json
 import time
 
@@ -30,6 +31,8 @@ import dws_helper
 import dws_installer
 
 STATE_FILE = Path.home() / ".dingtalk-mentions" / "state.json"
+TZ_CN = timezone(timedelta(hours=8))
+TIME_FMT = "%Y-%m-%d %H:%M"
 
 # ---------- 颜色 / 字体 ----------
 BG = "#f5f5f5"
@@ -44,7 +47,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("钉钉 @我 消息抓取器")
-        self.geometry("620x520")
+        self.geometry("640x620")
         self.configure(bg=BG)
         self.resizable(False, False)
 
@@ -93,6 +96,29 @@ class App(tk.Tk):
 
         self.categories = []  # [{categoryId, title}]
 
+        # 时间范围
+        time_frame = tk.LabelFrame(self, text="时间范围（留空 = 默认近 12h）", font=FONT, bg=BG, fg=FG)
+        time_frame.pack(fill="x", padx=20, pady=8)
+
+        row1 = tk.Frame(time_frame, bg=BG)
+        row1.pack(fill="x", padx=8, pady=(6, 2))
+        tk.Label(row1, text="从:", font=FONT, bg=BG, fg=FG, width=4, anchor="e").pack(side="left")
+        self.start_entry = ttk.Entry(row1, font=FONT, width=20)
+        self.start_entry.pack(side="left", padx=4)
+        tk.Label(row1, text="到:", font=FONT, bg=BG, fg=FG, width=4, anchor="e").pack(side="left", padx=(8, 0))
+        self.end_entry = ttk.Entry(row1, font=FONT, width=20)
+        self.end_entry.pack(side="left", padx=4)
+        tk.Label(row1, text="格式 YYYY-MM-DD HH:MM", font=FONT_SMALL, bg=BG, fg="#888").pack(side="left", padx=(8, 0))
+
+        row2 = tk.Frame(time_frame, bg=BG)
+        row2.pack(fill="x", padx=8, pady=(2, 8))
+        tk.Label(row2, text="快捷:", font=FONT_SMALL, bg=BG, fg=FG).pack(side="left")
+        ttk.Button(row2, text="今天", width=8, command=lambda: self._preset("today")).pack(side="left", padx=2)
+        ttk.Button(row2, text="昨天", width=8, command=lambda: self._preset("yesterday")).pack(side="left", padx=2)
+        ttk.Button(row2, text="近24h", width=8, command=lambda: self._preset("last24h")).pack(side="left", padx=2)
+        ttk.Button(row2, text="近3天", width=8, command=lambda: self._preset("last3d")).pack(side="left", padx=2)
+        ttk.Button(row2, text="清空", width=8, command=lambda: self._preset("clear")).pack(side="left", padx=2)
+
         # 日志区
         log_frame = tk.LabelFrame(self, text="运行日志", font=FONT, bg=BG, fg=FG)
         log_frame.pack(fill="both", expand=True, padx=20, pady=(8, 16))
@@ -101,6 +127,53 @@ class App(tk.Tk):
             log_frame, height=12, font=FONT_SMALL, wrap="word", state="disabled"
         )
         self.log_box.pack(fill="both", expand=True, padx=8, pady=8)
+
+    # --------- 时间快捷按钮 ---------
+    def _preset(self, mode):
+        self.start_entry.delete(0, "end")
+        self.end_entry.delete(0, "end")
+        now = datetime.now(TZ_CN)
+        if mode == "today":
+            start = now.replace(hour=0, minute=0, second=0)
+            self.start_entry.insert(0, start.strftime(TIME_FMT))
+            self.end_entry.insert(0, now.strftime(TIME_FMT))
+        elif mode == "yesterday":
+            yd = now - timedelta(days=1)
+            start = yd.replace(hour=0, minute=0, second=0)
+            end = yd.replace(hour=23, minute=59, second=0)
+            self.start_entry.insert(0, start.strftime(TIME_FMT))
+            self.end_entry.insert(0, end.strftime(TIME_FMT))
+        elif mode == "last24h":
+            start = now - timedelta(hours=24)
+            self.start_entry.insert(0, start.strftime(TIME_FMT))
+            self.end_entry.insert(0, now.strftime(TIME_FMT))
+        elif mode == "last3d":
+            start = now - timedelta(days=3)
+            self.start_entry.insert(0, start.strftime(TIME_FMT))
+            self.end_entry.insert(0, now.strftime(TIME_FMT))
+        # mode == "clear" 已经 delete 了
+
+    # --------- 解析用户输入的时间 ---------
+    def _parse_time_range(self):
+        """解析 GUI 时间输入，返回 (start_time, end_time) 或 (None, None)。出错弹窗并返回 False。"""
+        raw_start = self.start_entry.get().strip()
+        raw_end = self.end_entry.get().strip()
+        if not raw_start and not raw_end:
+            return None, None
+        try:
+            st = datetime.strptime(raw_start, TIME_FMT).replace(tzinfo=TZ_CN) if raw_start else None
+        except ValueError:
+            messagebox.showerror("时间格式错误", f"起始时间格式不对: '{raw_start}'\n正确示例: 2026-07-18 09:00")
+            return False, False
+        try:
+            et = datetime.strptime(raw_end, TIME_FMT).replace(tzinfo=TZ_CN) if raw_end else None
+        except ValueError:
+            messagebox.showerror("时间格式错误", f"结束时间格式不对: '{raw_end}'\n正确示例: 2026-07-18 18:00")
+            return False, False
+        if st and et and st >= et:
+            messagebox.showerror("时间范围错误", "起始时间必须早于结束时间")
+            return False, False
+        return st, et
 
     # --------- 日志 ---------
     def _log(self, text):
@@ -219,12 +292,20 @@ class App(tk.Tk):
             messagebox.showwarning("提示", "请先加载并选择一个分组")
             return
 
+        # 解析时间范围
+        parsed = self._parse_time_range()
+        if parsed == (False, False):  # 输入格式错误
+            return
+        start_time, end_time = parsed
+
         cat = self.categories[idx]
         category_id = cat.get("categoryId") or cat.get("id", "")
         cat_name = cat.get("title") or cat.get("name") or str(category_id)
 
         self._log(f"\n{'='*40}")
         self._log(f"开始抓取 — 分组: {cat_name}")
+        if start_time or end_time:
+            self._log(f"自定义时间范围: {start_time or '(默认起点)'} → {end_time or '(现在)'}")
 
         self.btn_fetch.configure(state="disabled")
 
@@ -244,6 +325,8 @@ class App(tk.Tk):
             code, stderr = dws_helper.run_fetch(
                 category_id,
                 on_output=lambda line: self.after(0, lambda l=line: self._log(l)),
+                start_time=start_time,
+                end_time=end_time,
             )
             if code != 0 and stderr:
                 self.after(0, lambda: self._log(f"[错误] {stderr}"))

@@ -117,14 +117,20 @@ def list_categories():
 
 
 # ---------- 抓取 / 建表（同进程直接调 core） ----------
-def run_fetch(category_id, on_output=None):
+def run_fetch(category_id, on_output=None, start_time=None, end_time=None):
     """
     直接调用 core.fetch_mentions（同进程），返回 (returncode, stderr_text)。
     on_output 每收到一条日志会被调用一次，用于 GUI 实时显示。
+    start_time / end_time: 可选的自定义时间范围（datetime）。
     """
     logger, _log_file = setup_logging(on_line=on_output, logger_name="fetch")
     try:
-        fetch_mentions(category_id=str(category_id), logger=logger)
+        fetch_mentions(
+            category_id=str(category_id),
+            logger=logger,
+            start_time=start_time,
+            end_time=end_time,
+        )
         return 0, ""
     except FetchError as e:
         return 1, str(e)

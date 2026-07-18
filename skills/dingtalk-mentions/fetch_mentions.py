@@ -30,9 +30,26 @@ from core.logging_setup import setup_logging
 from core.fetcher import fetch_mentions, FetchError
 
 
+def _parse_dt(s):
+    """支持 'YYYY-MM-DD HH:MM' 或 'YYYY-MM-DD HH:MM:SS'"""
+    from datetime import datetime, timedelta, timezone
+    tz = timezone(timedelta(hours=8))
+    s = s.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=tz)
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(f"无法解析时间: {s!r}（示例: 2026-07-18 09:00）")
+
+
 def main():
     parser = argparse.ArgumentParser(description="抓取分组内 @我 的消息")
     parser.add_argument("--category-id", required=True, help="会话分组 ID")
+    parser.add_argument("--start", type=_parse_dt, default=None,
+                        help="起始时间，例如 '2026-07-18 09:00'（可选）")
+    parser.add_argument("--end", type=_parse_dt, default=None,
+                        help="结束时间，例如 '2026-07-18 18:00'（可选）")
     args = parser.parse_args()
 
     logger, log_file = setup_logging(logger_name="fetch")
@@ -43,7 +60,12 @@ def main():
     logger.info("=" * 50)
 
     try:
-        stats = fetch_mentions(category_id=args.category_id, logger=logger)
+        stats = fetch_mentions(
+            category_id=args.category_id,
+            logger=logger,
+            start_time=args.start,
+            end_time=args.end,
+        )
     except FetchError as e:
         logger.error(f"❌ {e}")
         sys.exit(1)

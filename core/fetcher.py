@@ -92,11 +92,21 @@ def _get_conversations_in_category(logger: logging.Logger, category_id: str) -> 
     return convs if isinstance(convs, list) else []
 
 
-def _fetch_group_messages(logger: logging.Logger, group_id: str, start_time_str: str, stats: dict) -> list:
-    """翻页拉取某群从 start_time 到现在的所有消息。返回消息列表。"""
+def _fetch_group_messages(
+    logger: logging.Logger,
+    group_id: str,
+    start_time_str: str,
+    stats: dict,
+    end_time_str: Optional[str] = None,
+) -> list:
+    """翻页拉取某群从 start_time 到 end_time（或到现在）的所有消息。返回消息列表。
+
+    end_time_str: 上界（含），格式 'YYYY-MM-DD HH:MM:SS'。传 None 表示不设上界。
+    """
     all_messages = []
     current_time = start_time_str
     page = 0
+    reached_upper = False
 
     while True:
         page += 1
@@ -133,7 +143,20 @@ def _fetch_group_messages(logger: logging.Logger, group_id: str, start_time_str:
         if not messages:
             break
 
-        all_messages.extend(messages)
+        # 如果设置了上界，超出上界的消息丢掉，且遇到超界立刻停止翻页
+        if end_time_str:
+            kept = []
+            for m in messages:
+                ct = m.get("createTime", "")
+                if ct and ct > end_time_str:
+                    reached_upper = True
+                    break
+                kept.append(m)
+            all_messages.extend(kept)
+            if reached_upper:
+                break
+        else:
+            all_messages.extend(messages)
 
         has_more = data.get("hasMore", False)
         if not has_more:
@@ -244,10 +267,17 @@ def _trim_processed_ids(state: dict) -> None:
 def fetch_mentions(
     category_id: str,
     logger: Optional[logging.Logger] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
 ) -> dict:
     """
     抓取指定分组内所有群的 @我 消息，去重后写入 AI 表格。
     返回 stats 字典。
+
+    start_time / end_time: 自定义时间范围（datetime，带时区或 naive 均可）。
+      - 两个都为 None → 使用默认 LOOKBACK_HOURS 到当前
+      - 只传 start_time → 从 start_time 到当前
+      - 两个都传 → 严格按范围抓取
     调用前需保证 state.json 已存在（即已运行 setup_table）。
     """
     log = logger or logging.getLogger("fetch")
@@ -264,12 +294,17 @@ def fetch_mentions(
     mention_pattern = _build_mention_pattern(nick)
 
     # 时间窗口
-    lookback_h = _get_lookback_hours()
     now = datetime.now(TZ_CN)
-    start_dt = now - timedelta(hours=lookback_h)
+    if start_time is not None:
+        start_dt = start_time
+    else:
+        lookback_h = _get_lookback_hours()
+        start_dt = now - timedelta(hours=lookback_h)
+    end_dt = end_time if end_time is not None else now
+
     start_time_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-    end_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    log.info(f"时间窗口: {start_time_str} → {end_time_str} (近 {lookback_h}h)")
+    end_time_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    log.info(f"时间窗口: {start_time_str} → {end_time_str}")
 
     # 分组会话
     conversations = _get_conversations_in_category(log, category_id)
@@ -309,7 +344,7 @@ def fetch_mentions(
         group_name = group["name"] or group_id[:12]
         log.info(f"\n[{idx}/{len(groups)}] 群: {group_name}")
 
-        messages = _fetch_group_messages(log, group_id, start_time_str, stats)
+        messages = _fetch_group_messages(log, group_id, start_time_str, stats, end_time_str=end_time_str)
         if not messages:
             log.info("  无消息")
             continue
@@ -373,7 +408,9 @@ def fetch_mentions(
     all_ids = state.get("processed_msg_ids", []) + new_processed
     state["processed_msg_ids"] = all_ids
     _trim_processed_ids(state)
-    state.setdefault("last_run_by_category", {})[str(category_id)] = end_time_str
+    # 只在默认路径（未指定自定义 end_time）时更新 last_run，避免历史范围回填污染
+    if end_time is None:
+        state.setdefault("last_run_by_category", {})[str(category_id)] = end_time_str
     save_state(state)
 
     # 汇总
