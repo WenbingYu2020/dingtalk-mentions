@@ -29,6 +29,7 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 
 import dws_helper
 import dws_installer
+from datetime_picker import DateTimePicker
 
 STATE_FILE = Path.home() / ".dingtalk-mentions" / "state.json"
 TZ_CN = timezone(timedelta(hours=8))
@@ -103,12 +104,14 @@ class App(tk.Tk):
         row1 = tk.Frame(time_frame, bg=BG)
         row1.pack(fill="x", padx=8, pady=(6, 2))
         tk.Label(row1, text="从:", font=FONT, bg=BG, fg=FG, width=4, anchor="e").pack(side="left")
-        self.start_entry = ttk.Entry(row1, font=FONT, width=20)
+        self.start_entry = ttk.Entry(row1, font=FONT, width=18, state="readonly")
         self.start_entry.pack(side="left", padx=4)
+        ttk.Button(row1, text="📅", width=3, command=lambda: self._pick_datetime("start")).pack(side="left")
+
         tk.Label(row1, text="到:", font=FONT, bg=BG, fg=FG, width=4, anchor="e").pack(side="left", padx=(8, 0))
-        self.end_entry = ttk.Entry(row1, font=FONT, width=20)
+        self.end_entry = ttk.Entry(row1, font=FONT, width=18, state="readonly")
         self.end_entry.pack(side="left", padx=4)
-        tk.Label(row1, text="格式 YYYY-MM-DD HH:MM", font=FONT_SMALL, bg=BG, fg="#888").pack(side="left", padx=(8, 0))
+        ttk.Button(row1, text="📅", width=3, command=lambda: self._pick_datetime("end")).pack(side="left")
 
         row2 = tk.Frame(time_frame, bg=BG)
         row2.pack(fill="x", padx=8, pady=(2, 8))
@@ -128,30 +131,50 @@ class App(tk.Tk):
         )
         self.log_box.pack(fill="both", expand=True, padx=8, pady=8)
 
+    # --------- 只读 Entry 写值辅助 ---------
+    def _set_entry(self, entry: ttk.Entry, text: str):
+        entry.configure(state="normal")
+        entry.delete(0, "end")
+        if text:
+            entry.insert(0, text)
+        entry.configure(state="readonly")
+
+    # --------- 日期时间弹窗 ---------
+    def _pick_datetime(self, which: str):
+        entry = self.start_entry if which == "start" else self.end_entry
+        # 用当前值作为初始值；无则用现在
+        try:
+            initial = datetime.strptime(entry.get(), TIME_FMT).replace(tzinfo=TZ_CN) if entry.get() else datetime.now(TZ_CN)
+        except ValueError:
+            initial = datetime.now(TZ_CN)
+        picked = DateTimePicker.ask(self, initial=initial, title=("选择起始时间" if which == "start" else "选择结束时间"))
+        if picked is not None:
+            self._set_entry(entry, picked.strftime(TIME_FMT))
+
     # --------- 时间快捷按钮 ---------
     def _preset(self, mode):
-        self.start_entry.delete(0, "end")
-        self.end_entry.delete(0, "end")
         now = datetime.now(TZ_CN)
         if mode == "today":
             start = now.replace(hour=0, minute=0, second=0)
-            self.start_entry.insert(0, start.strftime(TIME_FMT))
-            self.end_entry.insert(0, now.strftime(TIME_FMT))
+            self._set_entry(self.start_entry, start.strftime(TIME_FMT))
+            self._set_entry(self.end_entry, now.strftime(TIME_FMT))
         elif mode == "yesterday":
             yd = now - timedelta(days=1)
             start = yd.replace(hour=0, minute=0, second=0)
             end = yd.replace(hour=23, minute=59, second=0)
-            self.start_entry.insert(0, start.strftime(TIME_FMT))
-            self.end_entry.insert(0, end.strftime(TIME_FMT))
+            self._set_entry(self.start_entry, start.strftime(TIME_FMT))
+            self._set_entry(self.end_entry, end.strftime(TIME_FMT))
         elif mode == "last24h":
             start = now - timedelta(hours=24)
-            self.start_entry.insert(0, start.strftime(TIME_FMT))
-            self.end_entry.insert(0, now.strftime(TIME_FMT))
+            self._set_entry(self.start_entry, start.strftime(TIME_FMT))
+            self._set_entry(self.end_entry, now.strftime(TIME_FMT))
         elif mode == "last3d":
             start = now - timedelta(days=3)
-            self.start_entry.insert(0, start.strftime(TIME_FMT))
-            self.end_entry.insert(0, now.strftime(TIME_FMT))
-        # mode == "clear" 已经 delete 了
+            self._set_entry(self.start_entry, start.strftime(TIME_FMT))
+            self._set_entry(self.end_entry, now.strftime(TIME_FMT))
+        elif mode == "clear":
+            self._set_entry(self.start_entry, "")
+            self._set_entry(self.end_entry, "")
 
     # --------- 解析用户输入的时间 ---------
     def _parse_time_range(self):

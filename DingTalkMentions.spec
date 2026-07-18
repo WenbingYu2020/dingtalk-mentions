@@ -18,6 +18,7 @@ a = Analysis(
     datas=[
         (str(PROJECT_ROOT / 'gui' / 'dws_helper.py'), 'gui'),
         (str(PROJECT_ROOT / 'gui' / 'dws_installer.py'), 'gui'),
+        (str(PROJECT_ROOT / 'gui' / 'datetime_picker.py'), 'gui'),
         (str(PROJECT_ROOT / 'core'), 'core'),
     ],
     hiddenimports=[
@@ -30,6 +31,7 @@ a = Analysis(
         'core.fetcher',
         'gui.dws_helper',
         'gui.dws_installer',
+        'gui.datetime_picker',
     ],
     hookspath=[],
     hooksconfig={},
