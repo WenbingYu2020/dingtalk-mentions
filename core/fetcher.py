@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,21 @@ from core.paths import STATE_DIR
 from core.state import load_state, save_state
 
 TZ_CN = timezone(timedelta(hours=8))
-LOOKBACK_DAYS = 2
+
+
+def _get_lookback_hours() -> float:
+    """时间窗口小时数，默认 12h，可用环境变量 DINGTALK_LOOKBACK_HOURS 覆盖。"""
+    raw = os.environ.get("DINGTALK_LOOKBACK_HOURS", "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return 12.0
+
+
 MAX_PROCESSED_IDS = 5000
 TRIM_TO = 3000
 
@@ -181,6 +196,43 @@ def _extract_text_content(msg: dict) -> str:
     return str(content) if content else ""
 
 
+def _is_from_me(msg: dict, my_user_id: str, my_nick: str) -> bool:
+    """判断消息是否由当前登录用户发出。userId 优先，nick 兜底。"""
+    if my_user_id:
+        for key in ("senderUserId", "senderStaffId", "senderId"):
+            v = msg.get(key)
+            if v and str(v) == str(my_user_id):
+                return True
+    if my_nick:
+        for key in ("senderNick", "sender", "senderName"):
+            v = msg.get(key)
+            if isinstance(v, str) and v == my_nick:
+                return True
+    return False
+
+
+def _extract_reply_target(msg: dict) -> Optional[str]:
+    """如果 msg 是一条'引用回复'消息,返回被引用消息的 openMessageId,否则返回 None。
+
+    钉钉不同 SDK/版本返回的字段名不统一,这里做宽松匹配。
+    """
+    for key in ("refMessage", "quoteMessage", "replyToMessage", "originalMessage"):
+        ref = msg.get(key)
+        if isinstance(ref, dict):
+            target = (
+                ref.get("openMessageId")
+                or ref.get("messageId")
+                or ref.get("id")
+            )
+            if target:
+                return str(target)
+    for key in ("quoteMessageId", "replyToMessageId", "refMessageId"):
+        v = msg.get(key)
+        if v:
+            return str(v)
+    return None
+
+
 def _trim_processed_ids(state: dict) -> None:
     """如果超限则裁剪 processed_msg_ids 到 TRIM_TO 条"""
     ids = state.get("processed_msg_ids", [])
@@ -208,14 +260,16 @@ def fetch_mentions(
 
     # 用户身份 & @我 正则
     nick = _ensure_user_identity(state, log)
+    my_user_id = (state.get("user_identity") or {}).get("userId", "")
     mention_pattern = _build_mention_pattern(nick)
 
-    # 时间窗口：最近 2 天
+    # 时间窗口
+    lookback_h = _get_lookback_hours()
     now = datetime.now(TZ_CN)
-    start_dt = now - timedelta(days=LOOKBACK_DAYS)
+    start_dt = now - timedelta(hours=lookback_h)
     start_time_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    log.info(f"时间窗口: {start_time_str} → {end_time_str}")
+    log.info(f"时间窗口: {start_time_str} → {end_time_str} (近 {lookback_h}h)")
 
     # 分组会话
     conversations = _get_conversations_in_category(log, category_id)
@@ -243,6 +297,7 @@ def fetch_mentions(
         "added": 0,
         "skipped_dup": 0,
         "skipped_not_me": 0,
+        "skipped_replied": 0,
         "failed": 0,
         "perm_skip": 0,
         "timeout_skip": 0,
@@ -259,6 +314,16 @@ def fetch_mentions(
             log.info("  无消息")
             continue
 
+        # 先扫一遍：我用引用/回复功能回复过的消息 → 视为已处理
+        replied_targets = set()
+        for m in messages:
+            if _is_from_me(m, my_user_id, nick):
+                target = _extract_reply_target(m)
+                if target:
+                    replied_targets.add(target)
+        if replied_targets:
+            log.debug(f"  我已引用回复 {len(replied_targets)} 条")
+
         # 客户端筛选 @我
         mention_msgs = [m for m in messages if mention_pattern.search(_extract_text_content(m))]
         log.info(f"  拉到 {len(messages)} 条，命中 @我 {len(mention_msgs)} 条")
@@ -274,6 +339,13 @@ def fetch_mentions(
 
             if msg_id in processed_ids:
                 stats["skipped_dup"] += 1
+                continue
+
+            if msg_id in replied_targets:
+                stats["skipped_replied"] += 1
+                processed_ids.add(msg_id)
+                new_processed.append(msg_id)
+                log.debug(f"  ⤴ 跳过(已引用回复): {msg_id[:20]}...")
                 continue
 
             sender = msg.get("sender") or msg.get("senderNick") or ""
@@ -310,6 +382,7 @@ def fetch_mentions(
     log.info("✅ 抓取完成!")
     log.info(f"  新增写入: {stats['added']} 条")
     log.info(f"  已存在跳过: {stats['skipped_dup']} 条")
+    log.info(f"  已引用回复跳过: {stats['skipped_replied']} 条")
     log.info(f"  权限跳过: {stats['perm_skip']} 群")
     log.info(f"  超时跳过: {stats['timeout_skip']} 群")
     log.info(f"  写入失败: {stats['failed']} 条")
