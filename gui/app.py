@@ -30,8 +30,7 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 import dws_helper
 import dws_installer
 from datetime_picker import DateTimePicker
-
-STATE_FILE = Path.home() / ".dingtalk-mentions" / "state.json"
+from core.paths import STATE_FILE
 TZ_CN = timezone(timedelta(hours=8))
 TIME_FMT = "%Y-%m-%d %H:%M"
 
