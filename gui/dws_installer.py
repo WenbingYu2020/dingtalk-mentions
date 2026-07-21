@@ -86,48 +86,88 @@ def _http_get_json(url: str, timeout: int = 15) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _find_asset_url(asset_name: str, cb: ProgressCB) -> Tuple[str, str]:
+def _source_label(url: str) -> str:
+    u = url.lower()
+    if "github" in u:
+        return "GitHub"
+    if "gitee" in u:
+        return "Gitee 镜像"
+    return "备用源"
+
+
+def _find_asset_urls(asset_name: str, cb: ProgressCB) -> Tuple[str, list]:
     """
-    返回 (tag_name, download_url)。
-    先试 GitHub，失败自动切 Gitee。
+    返回 (tag_name, [candidate_urls])。
+    同时查询 GitHub 与 Gitee，按优先级(GitHub → Gitee) 收集可用下载链接。
+    任一 API 挂掉都不影响另一个,只要至少拿到一个下载 URL 就继续。
     """
+    tag = ""
+    urls: list = []
+
     _emit(cb, 5, "查询最新版本（GitHub）...")
     try:
         data = _http_get_json(GITHUB_LATEST_API)
+        tag = data.get("tag_name", "") or tag
         for a in data.get("assets", []):
             if a.get("name") == asset_name:
-                return data.get("tag_name", ""), a.get("browser_download_url", "")
+                u = a.get("browser_download_url")
+                if u:
+                    urls.append(u)
+                break
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        _emit(cb, 8, f"GitHub 不可达（{e}），改用 Gitee 镜像 ...")
+        _emit(cb, 8, f"GitHub API 不可达（{e}）")
 
     _emit(cb, 10, "查询最新版本（Gitee 镜像）...")
-    data = _http_get_json(GITEE_LATEST_API)
-    tag = data.get("tag_name", "")
-    for a in data.get("assets", []):
-        if a.get("name") == asset_name:
-            return tag, a.get("browser_download_url", "")
-    raise RuntimeError(f"在 releases 中未找到资源: {asset_name}")
+    try:
+        data = _http_get_json(GITEE_LATEST_API)
+        tag = tag or data.get("tag_name", "")
+        for a in data.get("assets", []):
+            if a.get("name") == asset_name:
+                u = a.get("browser_download_url")
+                if u:
+                    urls.append(u)
+                break
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        _emit(cb, 12, f"Gitee API 不可达（{e}）")
+
+    if not urls:
+        raise RuntimeError(f"在 releases 中未找到资源: {asset_name}")
+    return tag, urls
 
 
-def _download(url: str, dest: Path, cb: ProgressCB, base_pct: int = 15, span_pct: int = 60) -> None:
-    """流式下载，进度百分比映射到 [base_pct, base_pct+span_pct]。"""
-    _emit(cb, base_pct, f"下载 {url.split('/')[-1]} ...")
-    req = urllib.request.Request(url, headers={"User-Agent": "DingTalkMentions/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        got = 0
-        with open(dest, "wb") as f:
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                got += len(chunk)
-                if total > 0:
-                    pct = base_pct + int(span_pct * got / total)
-                    _emit(cb, pct, f"下载中 {got // 1024 // 1024}MB / {total // 1024 // 1024}MB")
-    _emit(cb, base_pct + span_pct, "下载完成")
+def _download(urls: list, dest: Path, cb: ProgressCB, base_pct: int = 15, span_pct: int = 60) -> None:
+    """按候选 URL 顺序尝试下载。任一源下载完成即返回；全部失败抛 RuntimeError。"""
+    last_err = None
+    for idx, url in enumerate(urls, 1):
+        source = _source_label(url)
+        try:
+            _emit(cb, base_pct, f"从 {source} 下载 {url.split('/')[-1]} ...")
+            req = urllib.request.Request(url, headers={"User-Agent": "DingTalkMentions/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                got = 0
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                        if total > 0:
+                            pct = base_pct + int(span_pct * got / total)
+                            _emit(cb, pct, f"[{source}] {got // 1024 // 1024}MB / {total // 1024 // 1024}MB")
+            _emit(cb, base_pct + span_pct, f"从 {source} 下载完成")
+            return
+        except (urllib.error.URLError, TimeoutError, OSError, ConnectionError) as e:
+            last_err = e
+            dest.unlink(missing_ok=True)
+            remaining = len(urls) - idx
+            if remaining > 0:
+                _emit(cb, base_pct, f"{source} 下载失败（{e}），切换下一个源...")
+            else:
+                _emit(cb, base_pct, f"{source} 下载失败（{e}）")
+    raise RuntimeError(f"所有下载源都失败: {last_err}")
 
 
 def _extract(archive: Path, target_exe: Path, cb: ProgressCB) -> None:
@@ -178,14 +218,14 @@ def ensure_dws(on_progress: ProgressCB = None) -> Tuple[bool, str]:
     _emit(on_progress, 1, "dws 未安装，准备自动下载...")
     try:
         asset_name = _detect_platform_asset()
-        tag, url = _find_asset_url(asset_name, on_progress)
-        if not url:
+        tag, urls = _find_asset_urls(asset_name, on_progress)
+        if not urls:
             return False, "未能获取下载链接"
 
         dest_archive = DOWNLOADS_DIR / asset_name
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-        _download(url, dest_archive, on_progress)
+        _download(urls, dest_archive, on_progress)
         _extract(dest_archive, dws_path, on_progress)
 
         # 清理下载的压缩包
